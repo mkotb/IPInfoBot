@@ -14,11 +14,8 @@ import com.jtelegram.api.update.PollingUpdateProvider;
 import com.jtelegram.api.util.TextBuilder;
 import io.ipinfo.api.IPInfo;
 import io.ipinfo.api.cache.SimpleCache;
-import io.ipinfo.api.model.ASNResponse;
-import io.ipinfo.api.model.Company;
-import io.ipinfo.api.model.IPResponse;
+import io.ipinfo.api.model.*;
 
-import javax.xml.soap.Text;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +52,7 @@ public class IpInfoBot {
                     bot.getEventRegistry().registerEvent(InlineQueryEvent.class, this::handleInlineQuery);
 
                     System.out.println("Successfully logged in as " + bot.getBotInfo().getUsername());
-                }); //
+                });
     }
 
     private void handleInlineQuery(InlineQueryEvent event) {
@@ -64,31 +61,61 @@ public class IpInfoBot {
         responderService.submit(() -> {
             List<InlineResult> results = new ArrayList<>();
 
-            try {
-                IPResponse ipResponse = apiClient.lookupIP(query.getQuery());
+            if (!query.getQuery().trim().isEmpty()) {
+                boolean ip = false;
 
-                // only provide responses for non-empty queries
-                // (empty query will expose the IP of the bot)
-                if (!query.getQuery().trim().isEmpty() && ipResponse != null) {
-                    // always provide a general summary
-                    results.add(createSummary(ipResponse));
+                try {
+                    IPResponse ipResponse = apiClient.lookupIP(query.getQuery());
+                    ip = true;
 
-                    if (ipResponse.getLocation() != null) {
-                        // add location image
-                        results.add(createLocation(ipResponse));
-                        // add location as text
-                        results.add(createLocationSummary(ipResponse));
+                    // only provide responses for non-empty queries
+                    // (empty query will expose the IP of the bot)
+                    if (ipResponse != null) {
+                        // always provide a general summary
+                        results.add(createSummary(ipResponse));
+
+                        if (ipResponse.getLocation() != null) {
+                            // add location image
+                            results.add(createLocation(ipResponse));
+                            // add location as text
+                            results.add(createLocationSummary(ipResponse));
+                        }
+
+                        if (ipResponse.getAsn() != null) {
+                            results.add(createIPASNSummary(ipResponse));
+                        }
+
+                        if (ipResponse.getCompany() != null) {
+                            // include summary of just the company info
+                            results.add(createCompanySummary(ipResponse));
+                        }
                     }
+                } catch (Exception ex) {
+                    // provide a generic message on error (for now)
+                    results.add(createGenericMessage());
 
-                    if (ipResponse.getCompany() != null) {
-                        // include summary of just the company info
-                        results.add(createCompanySummary(ipResponse));
+                    if (ip) {
+                        ex.printStackTrace();
                     }
                 }
-            } catch (Exception e) {
-                // provide a generic message on error (for now)
+
+                if (!ip) {
+                    try {
+                        ASNResponse asnResponse = apiClient.lookupASN(query.getQuery());
+
+                        if (asnResponse != null) {
+                            results.add(createASNSummary(asnResponse));
+                            results.add(createASNPrefixList(asnResponse));
+                        } else {
+                            results.add(createGenericMessage());
+                        }
+                    } catch (Exception ex) {
+                        results.add(createGenericMessage());
+                        ex.printStackTrace();
+                    }
+                }
+            } else {
                 results.add(createGenericMessage());
-                e.printStackTrace();
             }
 
             bot.perform(AnswerInlineQuery.builder()
@@ -128,6 +155,10 @@ public class IpInfoBot {
             addCompanyText(builder, ip);
         }
 
+        if (ip.getAsn() != null) {
+            addIPASNText(builder, ip.getAsn());
+        }
+
         if (ip.getOrg() != null) {
             builder.plain("Organization: ").italics(ip.getOrg());
         }
@@ -153,7 +184,7 @@ public class IpInfoBot {
         addLocationText(builder, ip);
 
         return InlineResultArticle.builder()
-                .id("3")
+                .id("5")
                 .title("Location Summary")
                 .description("Send the location data of " + ip.getIp() + " as text")
                 .inputMessageContent(builderToInput(builder))
@@ -176,6 +207,86 @@ public class IpInfoBot {
                 .build();
     }
 
+    private InlineResultArticle createIPASNSummary(IPResponse ip) {
+        TextBuilder builder = TextBuilder.create();
+
+        builder.bold("-- ASN Information for ").italics(ip.getIp()).bold(" --").newLine();
+        addIPASNText(builder, ip.getAsn());
+
+        return InlineResultArticle.builder()
+                .id("4")
+                .title("IP ASN Summary")
+                .description("Send the ASN data for " + ip.getIp())
+                .inputMessageContent(builderToInput(builder))
+                .build();
+    }
+
+    private InlineResultArticle createASNSummary(ASNResponse response) {
+        TextBuilder builder = TextBuilder.create();
+
+        builder.bold("-- Summary of ").italics(response.getAsn()).bold(" --")
+                .newLine().newLine();
+
+        builder.plain("Label: ").code(response.getAsn()).newLine();
+        builder.plain("Name: ").italics(response.getName()).newLine();
+
+        if (response.getDomain() != null) {
+            builder.plain("Domain: ").code(response.getDomain()).newLine();
+        }
+
+        if (response.getCountry() != null) {
+            builder.plain("Country: ").code(response.getCountry()).newLine();
+        }
+
+        if (response.getRegistry() != null) {
+            builder.plain("Registry: ").italics(response.getRegistry()).newLine();
+        }
+
+        if (response.getAllocated() != null) {
+            builder.plain("Allocation Date: ").italics(response.getAllocated()).newLine();
+        }
+
+        builder.plain("Number of IPs: ").code(response.getNumIps()).newLine();
+        builder.plain("IPv4 prefixes: ").code(String.valueOf(response.getPrefixes().size())).newLine();
+        builder.plain("IPv6 prefixes: ").code(String.valueOf(response.getPrefixes6().size())).newLine();
+
+        return InlineResultArticle.builder()
+                .id("1")
+                .title("General Summary")
+                .description("Send a general summary of " + response.getAsn())
+                .inputMessageContent(builderToInput(builder))
+                .build();
+    }
+
+    private InlineResultArticle createASNPrefixList(ASNResponse response) {
+        TextBuilder builder = TextBuilder.create();
+
+        builder.bold("-- ASN Prefix List of ").italics(response.getAsn()).bold(" --")
+                .newLine().newLine();
+
+        List<Prefix> prefixes = new ArrayList<>(response.getPrefixes());
+        prefixes.addAll(response.getPrefixes6());
+
+        prefixes.forEach((prefix) -> {
+            builder.code(prefix.getNetblock());
+
+            if (prefix.getId() != null) {
+                builder.plain(" -- ")
+                        .code(prefix.getId()).plain(", ")
+                        .italics(prefix.getNetblock()).plain(", ")
+                        .italics(prefix.getCountry());
+            }
+
+            builder.newLine();
+        });
+
+        return InlineResultArticle.builder()
+                .id("6")
+                .title("ASN Prefix List")
+                .description("See the list of prefixes " + response.getAsn())
+                .inputMessageContent(builderToInput(builder))
+                .build();
+    }
 
     private InlineResultLocation createLocation(IPResponse ip) {
         return InlineResultLocation.builder()
@@ -221,6 +332,24 @@ public class IpInfoBot {
         }
 
         builder.newLine();
+    }
+
+    private void addIPASNText(TextBuilder builder, ASN asn) {
+        builder.bold("ASN Info:").newLine();
+        builder.plain("- Label: ").code(asn.getAsn()).newLine();
+        builder.plain("- Name: ").italics(asn.getName());
+
+        if (asn.getDomain() != null) {
+            builder.plain(", ").code(asn.getDomain());
+        }
+
+        builder.newLine();
+
+        if (asn.getRoute() != null) {
+            builder.plain("- Route: ").code(asn.getRoute()).newLine();
+        }
+
+        builder.plain("- Type: ").italics(asn.getType().toUpperCase()).newLine();
     }
 
     private InputMessageContent builderToInput(TextBuilder builder) {
